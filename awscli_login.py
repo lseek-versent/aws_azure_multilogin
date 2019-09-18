@@ -4,16 +4,14 @@ assertion"""
 
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 import base64 
+import concurrent.futures as cof
 from configparser import ConfigParser
 from fnmatch import fnmatch
 from functools import partial
 import logging
 import os
 import os.path as osp
-import queue
 import sys
-import time
-import threading
 import xml.etree.ElementTree as ET
 
 import boto3
@@ -44,7 +42,6 @@ class AwsCliLoginPool(object):
         self.principal_arns = self.parse_assertion()
         self.config, self.credentials = self.read_cfg(AWS_CFGFILE, AWS_CREDFILE)
         self.profiles = self.select_profiles(profile_globs)
-        self.queue = queue.SimpleQueue()
 
     def read_cfg(self, cfg_file, creds_file):
         config = ConfigParser()
@@ -120,40 +117,14 @@ class AwsCliLoginPool(object):
             'aws_session_expiration': resp_creds['Expiration'].isoformat()[:-6] + 'Z'
         }
         self.credentials[profile.replace('profile ', '')] = profile_creds
-        self.log.debug('Logged into profile:%s', profile)
+        self.log.debug('Got credentials for profile:%s', profile)
 
     def parallel_login(self, nthreads=1):
-        self.log.debug('Logging into profiles:%s', self.profiles)
-        for p in self.profiles:
-            self.queue.put(p)
-
-        threads = []
-        for i in range(nthreads):
-            t = threading.Thread(target=self.thread_main,
-                                 args=('Thread:{}'.format(i),))
-            threads.append(t)
-            t.start()
-
-        while len(threads):
-            self.log.debug('Waiting for :%s threads to exit', len(threads))
-            threads[0].join()
-            del threads[0]
-            time.sleep(2)
-
+        with cof.ThreadPoolExecutor(max_workers=nthreads) as executor:
+            futures = [executor.submit(self.login_profile, p)
+                       for p in self.profiles]
+            cof.wait(futures)
         self.write_creds()
-
-    def thread_main(self, thread_name):
-        # main entry point for worker threads
-        # The work queue should have been created AND POPULATED before this
-        # method is called.
-        self.log.debug('Starting thread:%s', thread_name)
-        while True:
-            try:
-                profile = self.queue.get_nowait()
-            except queue.Empty:
-                self.log.debug('%s: Nothing left in queue', thread_name)
-                break
-            self.login_profile(profile)
 
     def write_creds(self):
         with open(AWS_CREDFILE, "w") as creds_file:
