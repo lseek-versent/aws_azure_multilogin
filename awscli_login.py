@@ -25,6 +25,9 @@ class AwsCliLoginPool(object):
     """Use a thread pool to get temp creds for multiple accounts using one SAML
     assertion"""
 
+    # Child classes MUST override these
+    ROLE_LIST_NAME = ''
+
     def __init__(self, assertion, profile_globs, verbose=False):
         """assertion:
             SAML assertion to provide to the AWS STS API
@@ -74,7 +77,8 @@ class AwsCliLoginPool(object):
         self.log.debug('xml:%s', xml)
         root = ET.fromstring(xml)
         # Note: element tree seems to capitalize tags and attribute keys
-        role_list_name = "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"
+        role_list_name = self.ROLE_LIST_NAME
+        self.log.debug(f'Looking for role list {role_list_name}')
         role_tag = '{urn:oasis:names:tc:SAML:2.0:assertion}Attribute'
         xpath_expr = ".//{}[@Name='{}']".format(role_tag, role_list_name)
         roles = root.findall(xpath_expr)
@@ -99,11 +103,11 @@ class AwsCliLoginPool(object):
         'profile' string - just the name of the profile"""
         self.log.debug('Logging into profile:%s', profile)
         profile_cfg = self.config[profile]
-        role_arn = profile_cfg.get('azure_default_role_arn', None)
+        role_arn = profile_cfg.get('role_arn', None)
         if not role_arn:
             self.log.warning('No default role found for profile:%s', profile)
             return
-        duration = int(profile_cfg.get('azure_default_duration_hours', 1)) * 3600
+        duration = int(profile_cfg.get('default_duration_hours', 1)) * 3600
         sts = boto3.client('sts')
         resp = sts.assume_role_with_saml(RoleArn=role_arn,
                                          PrincipalArn=self.principal_arns[role_arn],
@@ -131,11 +135,22 @@ class AwsCliLoginPool(object):
             self.credentials.write(creds_file)
 
 
+class AwsCliAzureClient(AwsCliLoginPool):
+    ROLE_LIST_NAME = "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"
+
+
+class AwsCliPingClient(AwsCliLoginPool):
+    ROLE_LIST_NAME = "https://aws.amazon.com/SAML/Attributes/Role"
+
+
 def main(argv=sys.argv):
     parser = ArgumentParser(
         formatter_class=ArgumentDefaultsHelpFormatter,
         description='Log into multiple AWS accounts with a SAML assertion'
     )
+    parser.add_argument('-c', '--client-type', default='ping',
+                        choices=['azure', 'ping'],
+                        help='Type of SAML backend')
     parser.add_argument('-f', '--assertion-file', default='-',
         help='File to read SAML assertion from. Use "-" for stdin')
     parser.add_argument('-n', '--n-threads', default=1, type=int,
@@ -151,9 +166,10 @@ def main(argv=sys.argv):
     infile = open(args.assertion_file) if args.assertion_file != '-' else sys.stdin
     assertion = infile.read()
     infile.close()
-    client = AwsCliLoginPool(assertion,
-                             set(args.profiles),
-                             args.verbose)
+    client = {
+        'azure': AwsCliAzureClient,
+        'ping': AwsCliPingClient
+    } [args.client_type](assertion, set(args.profiles), args.verbose)
     client.parallel_login(args.n_threads)
 
 

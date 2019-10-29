@@ -14,7 +14,7 @@ with open('VERSION', 'r') as version_file:
     version = version_file.read().strip()
 
 
-setup(name='aws-azure-multilogin',
+setup(name='awscli-multilogin',
       version=version,
       description='Log into multiple AWS profiles using one SAML assertion',
       author='David Koo',
@@ -23,6 +23,6 @@ setup(name='aws-azure-multilogin',
       install_requires=requirements,
       entry_points={
           'console_scripts': [
-            'aws_azure_multilogin=awscli_login:main',
+            'aws_multilogin=awscli_login:main',
           ],
       })
